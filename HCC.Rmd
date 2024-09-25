@@ -19,10 +19,6 @@ knitr::opts_chunk$set(
 
 ## 1. Import required packages
 
-
-install.packages('devtools')
-devtools::install_github('immunogenomics/presto') # install for findallmarkers!
-
 ```{r load libraries}
 library(Seurat)
 library(SeuratData)
