@@ -201,6 +201,8 @@ print(seuratobjects.merged@meta.data) # visualize the seurat object
 
 seuratobjects.merged@active.ident <- seuratobjects.merged$old.ident # rename the active indent to sample names
 
+print(seuratobjects.merged) # take a look at the merged seuratobjects 
+
 rm(g2m.genes, s.genes) # remove to keep a clean data sheet
 ```
 
@@ -211,6 +213,8 @@ This compacts the data so that computations becomes faster and summarizing measu
 head(VariableFeatures(seuratobjects.merged)) # visualize the variable genes that the PCA is run on
 
 seuratobjects.merged <- RunPCA(seuratobjects.merged, features = VariableFeatures(object = seuratobjects.merged), verbose = FALSE) # run PCA
+
+print(seuratobjects.merged) # take a look at the merged seuratobjects 
 ```
 
 Take a look at the data to determine if integration of datasets is needed.
@@ -222,6 +226,8 @@ ElbowPlot(seuratobjects.merged, ndims = 50) # check dimensionality of the data
 seuratobjects.merged <- RunUMAP(seuratobjects.merged, dims = 1:30) # run UMAP
 
 UMAPPlot(seuratobjects.merged, group.by = "orig.ident") # show UMAP per batch
+
+print(seuratobjects.merged) # take a look at the merged seuratobjects 
 ```
 
 Integration is performed to correct for batch effect, you can choose for different integration methods like harmony of rpca (https://satijalab.org/seurat/articles/seurat5_integration)
@@ -239,6 +245,8 @@ ElbowPlot(seuratobjects.merged, ndims = 50) # check dimensionality of the data
 seuratobjects.merged <- RunUMAP(seuratobjects.merged, dims = 1:20, reduction = "harmony") # run UMAP
 
 UMAPPlot(seuratobjects.merged, group.by = "orig.ident") # show UMAP per batch
+
+print(seuratobjects.merged) # take a look at the merged seuratobjects 
 ```
 
 ## 6. Cluster the cells
@@ -246,14 +254,29 @@ To better understand the underlying heterogeneity in the data, it is necessary t
 
 ```{r clustering}
 seuratobjects.merged <- FindNeighbors(seuratobjects.merged, reduction = "harmony",  dims = 1:20) # find neighbours
+seuratobjects.merged <- FindClusters(seuratobjects.merged, resolution = 0.1) # find clusters
+seuratobjects.merged <- FindClusters(seuratobjects.merged, resolution = 0.2) # find clusters
 seuratobjects.merged <- FindClusters(seuratobjects.merged, resolution = 0.3) # find clusters
+seuratobjects.merged <- FindClusters(seuratobjects.merged, resolution = 0.4) # find clusters
+seuratobjects.merged <- FindClusters(seuratobjects.merged, resolution = 0.5) # find clusters
 
-seuratobjects.merged$condition <- ifelse(grepl("T_C", seuratobjects.merged$orig.ident, ignore.case = TRUE), "T_C", "NT_P") # retrieve condition of samples
+DimPlot(seuratobjects.merged, group.by = c("SCT_snn_res.0.1"), label = TRUE)
+DimPlot(seuratobjects.merged, group.by = c("SCT_snn_res.0.2"), label = TRUE)
+DimPlot(seuratobjects.merged, group.by = c("SCT_snn_res.0.3"), label = TRUE)
+DimPlot(seuratobjects.merged, group.by = c("SCT_snn_res.0.4"), label = TRUE)
+DimPlot(seuratobjects.merged, group.by = c("SCT_snn_res.0.5"), label = TRUE)# plot clusters
 
-DimPlot(seuratobjects.merged, group.by = c("seurat_clusters"), label = TRUE) # plot clusters
 DimPlot(seuratobjects.merged, group.by = "orig.ident") # plot samples
+seuratobjects.merged$condition <- ifelse(grepl("T_C", seuratobjects.merged$orig.ident, ignore.case = TRUE), "Tumor", "Non-tumor") # retrieve condition of samples
 DimPlot(seuratobjects.merged, group.by = "condition") # plot conditions
 DimPlot(seuratobjects.merged, group.by = "Phase") # plot cell cycle phase
+
+print(seuratobjects.merged) # take a look at the merged seuratobjects
+print(seuratobjects.merged@meta.data) # take a look at the merged seuratobjects
+```
+
+```{r set resolution}
+seuratobjects.merged <- FindClusters(seuratobjects.merged, resolution = 0.4) # rerun to set the desired resolution
 ```
 
 Compute doublet scores within each batch and check clusters for high doublet scores.
