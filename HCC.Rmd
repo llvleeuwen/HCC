@@ -34,6 +34,7 @@ library(glmGamPoi)
 library(harmony)
 library(patchwork)
 library(DoubletFinder)
+library(Nebulosa)
 options(future.globals.maxSize = 1e9)
 ```
 
@@ -330,13 +331,9 @@ seuratobjects.merged$doublet.scores <- do.call(c, doubletsscore_list)[Cells(seur
 FeaturePlot(seuratobjects.merged, features = "doublet.scores") # plot the doublet scores
 ```
 
-Once integrative analysis is complete, you can join the layers, which collapses the individual datasets together and recreates the original counts and data layers. You will need to do this before performing any differential expression analysis. 
-check print(seuratobjects.merged) before running!!
+Performing differential expression analysis. 
 
 ```{r find markers}
-
-seuratobjects.joined <- JoinLayers(seuratobjects.merged) # find out if necessary
-
 seuratobjects.merged <- PrepSCTFindMarkers(seuratobjects.merged) # prepare
 
 print(seuratobjects.merged)
@@ -411,5 +408,13 @@ DotPlot(seuratobjects.merged, features = c("SIGLEC1"))
 FeaturePlot(seuratobjects.merged, features=c("SIGLEC1"),
             label = TRUE, cols = c('lightgrey', 'blue'))
 FeaturePlot(seuratobjects.merged, features=c("SIGLEC1"), split.by = "condition")
-VlnPlot(seuratobjects.merged, features = c("SIGLEC1")) + theme(legend.position = "none")
+plot_density(seuratobjects.merged, features = "SIGLEC1", reduction = "umap")
+VlnPlot(seuratobjects.merged, features = c("SIGLEC1"), pt.size = 0) + theme(legend.position = "none")
+
+for (i in seq_along(sample.names)) {
+  subset_obj <- subset(seuratobjects.merged, orig.ident == sample.names[i])
+  plot <- FeaturePlot(subset_obj, features=c("SIGLEC1"),
+            label = TRUE, cols = c('lightgrey', 'blue'))
+  print(plot)
+}
 ```
