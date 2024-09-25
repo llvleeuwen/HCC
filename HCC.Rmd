@@ -175,6 +175,9 @@ print(VlnPlot(seuratobjects.merged,
 print(VlnPlot(seuratobjects.merged, 
                         features = c("percent.rb"),
                         pt.size = 0, cols = c("#8dd3c7","#ffffb3","#bebada","#fb8072","#80b1d3","#fdb462","#b3de69","#fccde5","#d9d9d9","#bc80bd"), ncol = 1) + theme(legend.position = 'none') + ggtitle("Cleaned Ribo")) # plot the cleaned ribosomal percentage
+
+print(seuratobjects.merged) # take a look at the merged seuratobjects
+
 ```
 
 ## 4. Normalization, Feature selection for following heterogeneity analysis, Data scaling
