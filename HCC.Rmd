@@ -43,7 +43,7 @@ Manually set the working directory to the file with the scRNAseq datasets.
 Load the HCC scRNAseq dataset. The `Read10X()` function reads in the output of the cellranger pipeline from 10X, returning a unique molecular identified (UMI) count matrix. The values in this matrix represent the number of molecules for each feature (i.e. gene; row) that are detected in each cell (column).
 
 ```{r load in datasets}
-sample.names <- c(list.files("//store/isilon/archive/MDL lab/Groups/Group Kwekkeboom/Members/Luca van Leeuwen/Protocols/R Scripts for scRNAseq/scRNAseqHCC/Data")) # get sample names 
+sample.names <- c(list.files("//store/isilon/archive/MDL lab/Groups/Group Kwekkeboom/Members/Luca van Leeuwen/Protocols/R Scripts for scRNAseq/Data")) # get sample names 
 
 datasets.list <- list() # create an empty list to store the data sets
 
