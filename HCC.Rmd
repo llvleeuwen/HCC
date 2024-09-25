@@ -1,0 +1,393 @@
+title: "script to perform standard workflow steps to analyze single cell RNA-Seq data"
+author: "llvleeuwen"
+date: "`r Sys.Date()`"
+output: pdf_document
+
+**data source:** Single-cell dissection of the multicellular ecosystem and molecular features underlying microvascular invasion in HCC 
+**GEO Accesion number:** GSE242889
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  tidy = 'styler',
+  fig.width = 8,
+  message = FALSE,
+  warning = FALSE,
+  time_it = TRUE,
+  error = TRUE
+)
+```
+
+## 1. Import required packages
+
+
+install.packages('devtools')
+devtools::install_github('immunogenomics/presto') # install for findallmarkers!
+
+```{r load libraries}
+library(Seurat)
+library(SeuratData)
+library(SeuratWrappers)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(RColorBrewer)
+library(purrr)
+library(cowplot)
+library(sctransform)
+library(glmGamPoi)
+library(harmony)
+library(patchwork)
+library(DoubletFinder)
+options(future.globals.maxSize = 1e9)
+```
+
+Manually set the working directory to the file with the scRNAseq datasets.
+
+## 2. Create a Seurat object 
+Load the HCC scRNAseq dataset. The `Read10X()` function reads in the output of the cellranger pipeline from 10X, returning a unique molecular identified (UMI) count matrix. The values in this matrix represent the number of molecules for each feature (i.e. gene; row) that are detected in each cell (column).
+
+```{r load in datasets}
+sample.names <- c(list.files("//store/isilon/archive/MDL lab/Groups/Group Kwekkeboom/Members/Luca van Leeuwen/Protocols/R Scripts for scRNAseq/scRNAseqHCC/Data")) # get sample names 
+
+datasets.list <- list() # create an empty list to store the data sets
+
+for (i in seq_along(sample.names)) {
+  datasets.list[[sample.names[i]]] <- Read10X(data.dir = sample.names[i])
+} # load in data sets
+```
+
+Convert the count matrix to Seurat objects. The object serves as a container that contains both data (like the count matrix) and analysis (like PCA, or clustering results) for a single-cell dataset.
+
+```{r convert datasets to seuratobjects}
+seuratobjects.list <- list() # create an empty list
+
+for (i in seq_along(sample.names)) {
+  seuratobjects.list[[sample.names[i]]] <- CreateSeuratObject(
+    counts = datasets.list[[sample.names[i]]],
+    project = sample.names[i],
+    min.cells = 3,  # Include genes with detected expression in at least this many cells
+    min.features = 200 # Include cells where at least this many genes are detected
+  )} # convert datasets in list to seuratobjects 
+
+for (i in 1:length(seuratobjects.list)) {
+print(seuratobjects.list[[i]])
+} # take a look at the seuratobjects 
+```
+
+## 3. Quality Control
+Quality control of the samples is based on:
+* The number of unique genes (features) detected in each cell.
+  + Low-quality cells or empty droplets will often have very few genes.
+  + Multiplets may exhibit a very high gene count.
+* The total number of molecules detected within a cell (count).
+  + this correlates strongly with number of unique genes.
+* The percentage of reads that map to the mitochondrial genome.
+    + Low-quality / dying cells often exhibit extensive mitochondrial contamination.
+
+```{r add percentage mitochondrial and ribosomal}
+for (i in seq_along(sample.names)) {
+  seuratobjects.list[[sample.names[i]]] <- PercentageFeatureSet(
+    object = seuratobjects.list[[sample.names[i]]],
+    pattern = "^MT-",
+    col.name = "percent.mt"
+  )} # add percentage mitochondrial to the metadata
+
+for (i in seq_along(sample.names)) {
+  seuratobjects.list[[sample.names[i]]] <- PercentageFeatureSet(
+    object = seuratobjects.list[[sample.names[i]]],
+    pattern = "^RP[SL]",
+    col.name = "percent.rb"
+  )} # add percentage ribosomal to the metadata
+
+for (i in 1:length(seuratobjects.list)) {
+print(head(seuratobjects.list[[i]]@meta.data, 5))
+} # check addition of mitochondrial and ribosomal percantages
+```
+
+Show violin plot with threshold at 1% to filter out outliers, this should be the minority.
+
+```{r visualize the quality of the data}
+
+for (i in seq_along(sample.names)) {
+ 
+feature.quantiles = c( quantile(seuratobjects.list[[i]]$nFeature_RNA, probs = 0.01), quantile(seuratobjects.list[[i]]$nFeature_RNA, probs = 0.99)) # determine the percentiles of features
+
+count.quantiles = c(quantile(seuratobjects.list[[i]]$nCount_RNA, probs = 0.01), quantile(seuratobjects.list[[i]]$nCount_RNA, probs = 0.99)) # determine percentiles of counts
+  
+feature <- VlnPlot(seuratobjects.list[[i]], 
+                     features = c("nFeature_RNA"), pt.size = 0, cols = "#66c2a5") + geom_hline(yintercept = feature.quantiles) +     theme(legend.position = 'none') + ggtitle("Features") # create a feature plot with percentiles
+
+count <- VlnPlot(seuratobjects.list[[i]], 
+                   features = c("nCount_RNA"), pt.size = 0, cols = "#fc8d62") + geom_hline(yintercept = count.quantiles)  + theme(legend.position = 'none') + ggtitle("Counts") # create a count plot with percentiles
+  
+mito <- VlnPlot(seuratobjects.list[[i]], 
+                    features = c("percent.mt"), pt.size = 0, cols = "#8da0cb") + geom_hline(yintercept = 30) + theme(legend.position = 'none') + ggtitle("Mito") # create a mitochondrial plot with 20th percentile
+  
+ribo <- VlnPlot(seuratobjects.list[[i]], 
+                    features = c("percent.rb"), pt.size = 0, cols = "#e78ac3") + theme(legend.position = 'none') + ggtitle("ribo") # create a ribosomal plot
+
+print (feature | count | mito | ribo) # print plots
+
+rm(count, feature, mito, ribo, count.quantiles, feature.quantiles) # remove to keep a clean data sheet
+}
+```
+
+You can check if gene number and transcript number are well correlated, and then decide to only apply a cutoff to one.
+
+```{r visualize relationship of between features}
+for (i in seq_along(sample.names)) {
+x <- FeatureScatter(seuratobjects.list[[i]], feature1 = "nCount_RNA", feature2 = "nFeature_RNA", cols = "#66c2a5")
+print(x)
+} # correlate features
+
+rm(x) # remove to keep a clean data sheet
+```
+
+Clean the data using the previously determined cutoffs
+
+```{r clean the samples}
+cleanedseuratobjects.list <- seuratobjects.list # create a new variable to store the cleaned data
+
+for (i in seq_along(sample.names)) {
+  cleanedseuratobjects.list[[sample.names[i]]] <- subset(cleanedseuratobjects.list[[sample.names[i]]], subset = 
+                                                            nFeature_RNA > quantile(cleanedseuratobjects.list[[i]]$nFeature_RNA, probs = 0.01) 
+                                                          & nFeature_RNA < quantile(cleanedseuratobjects.list[[i]]$nFeature_RNA, probs = 0.99)
+                                                          & nCount_RNA > quantile(cleanedseuratobjects.list[[i]]$nCount_RNA, probs = 0.01) 
+                                                          & nCount_RNA < quantile(cleanedseuratobjects.list[[i]]$nCount_RNA, probs = 0.99)
+                                                          & percent.mt < 30)
+} # clean the data and store in a new variable
+
+for (i in 1:length(cleanedseuratobjects.list)) {
+print(cleanedseuratobjects.list[[i]])
+} # take a look at the cleaned seuratobjects
+
+seuratobjects.merged <- merge(x = cleanedseuratobjects.list[[1]], y = cleanedseuratobjects.list[2:length(cleanedseuratobjects.list)], merge.data=TRUE) # merge the data for easier handling
+
+# make sure to add colors with additional samples!
+print(VlnPlot(seuratobjects.merged, 
+                           features = c("nFeature_RNA"),
+                           pt.size = 0, cols = c("#8dd3c7","#ffffb3","#bebada","#fb8072","#80b1d3","#fdb462","#b3de69","#fccde5","#d9d9d9","#bc80bd"), ncol = 1) + theme(legend.position = 'none') + ggtitle("Cleaned Features")) # plot the cleaned features
+
+print(VlnPlot(seuratobjects.merged, 
+                         features = c("nCount_RNA"),
+                         pt.size = 0, cols = c("#8dd3c7","#ffffb3","#bebada","#fb8072","#80b1d3","#fdb462","#b3de69","#fccde5","#d9d9d9","#bc80bd"), ncol = 1) + theme(legend.position = 'none') + ggtitle("Cleaned Count")) # plot the cleaned counts
+
+print(VlnPlot(seuratobjects.merged, 
+                        features = c("percent.mt"),
+                        pt.size = 0, cols = c("#8dd3c7","#ffffb3","#bebada","#fb8072","#80b1d3","#fdb462","#b3de69","#fccde5","#d9d9d9","#bc80bd"), ncol = 1) + theme(legend.position = 'none') + ggtitle("Cleaned Mito")) # plot the cleaned mitochondrial percentage
+
+print(VlnPlot(seuratobjects.merged, 
+                        features = c("percent.rb"),
+                        pt.size = 0, cols = c("#8dd3c7","#ffffb3","#bebada","#fb8072","#80b1d3","#fdb462","#b3de69","#fccde5","#d9d9d9","#bc80bd"), ncol = 1) + theme(legend.position = 'none') + ggtitle("Cleaned Ribo")) # plot the cleaned ribosomal percentage
+```
+
+## 4. Normalization, Feature selection for following heterogeneity analysis, Data scaling
+
+As the amount of RNA captured per cell is different, normalization is done to make gene expression levels comparable between cells. In addition, not every gene has the same level of information , therefore feature selection is performed to extract the highly variable genes. For feature selection often a value between 2000 to 5000 is OK and using a different value doesn't affect the results too much. Try multiple values and check. Laslty, data scaling is done to prevent the analysis from depending too much on the highly expressed genes. Sctransform performs these processes simultaneously. 
+
+Note that since the data is split into layers, normalization and variable feature identification is performed for each batch independently (a consensus set of variable features is automatically identified).
+
+```{r normalizing the data}
+
+s.genes <- cc.genes$s.genes # store genes associated with the S phase
+g2m.genes <- cc.genes$g2m.genes # store genes associated with the G2M phase
+
+seuratobjects.merged <- SCTransform(seuratobjects.merged, assay = 'RNA', new.assay.name = 'SCT', vars.to.regress = c("percent.mt", "percent.rb"), verbose = FALSE) # normalize the data
+  
+seuratobjects.merged <- CellCycleScoring(object = seuratobjects.merged, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE) # add cell cycle scores
+
+seuratobjects.merged <- SCTransform(seuratobjects.merged, assay = 'RNA', new.assay.name = 'SCT', vars.to.regress = c("percent.mt", "percent.rb", "S.Score", "G2M.Score"), verbose = FALSE) # rerun the normalization while regressing out cell cycle scores
+
+print(seuratobjects.merged@meta.data) # visualize the seurat object
+
+seuratobjects.merged@active.ident <- seuratobjects.merged$old.ident # rename the active indent to sample names
+
+rm(g2m.genes, s.genes) # remove to keep a clean data sheet
+```
+
+## 5. Linear dimensionality reduction using  PCA and Non-linear dimension reduction for visualization (UAMP)
+This compacts the data so that computations becomes faster and summarizing measurements of related features enhances the signal robustness.
+
+```{r run PCA}
+head(VariableFeatures(seuratobjects.merged)) # visualize the variable genes that the PCA is run on
+
+seuratobjects.merged <- RunPCA(seuratobjects.merged, features = VariableFeatures(object = seuratobjects.merged), verbose = FALSE) # run PCA
+```
+
+Take a look at the data to determine if integration of datasets is needed.
+Determine dimensionality of the data. Choose a point in the curve where the PCs sufficiently explain the variation in the data (between 10 and 50 is usually reasonable).
+
+```{r check for batch effects}
+ElbowPlot(seuratobjects.merged, ndims = 50) # check dimensionality of the data
+
+seuratobjects.merged <- RunUMAP(seuratobjects.merged, dims = 1:30) # run UMAP
+
+UMAPPlot(seuratobjects.merged, group.by = "orig.ident") # show UMAP per batch
+```
+
+Integration is performed to correct for batch effect, you can choose for different integration methods like harmony of rpca (https://satijalab.org/seurat/articles/seurat5_integration)
+
+```{r correct for batch effects}
+seuratobjects.merged <- IntegrateLayers(
+  object = seuratobjects.merged,
+  method = HarmonyIntegration,
+  normalization.method = "SCT",
+  verbose = F
+) # integrate the data of the different batches
+
+ElbowPlot(seuratobjects.merged, ndims = 50) # check dimensionality of the data
+
+seuratobjects.merged <- RunUMAP(seuratobjects.merged, dims = 1:20, reduction = "harmony") # run UMAP
+
+UMAPPlot(seuratobjects.merged, group.by = "orig.ident") # show UMAP per batch
+```
+
+## 6. Cluster the cells
+To better understand the underlying heterogeneity in the data, it is necessary to identify cell groups in an unbiased manner. Cells are connected based on shortest distance in their PC values and strength of the connection is based on the proportion of shared neighbours between every cell. Weak connections are trimmed. Commonly used resolutions for clusters range between 0.1 and 1, which is best depends on the aim of the analysis. Can run this multiple times to find the best fit (newest clustering can be obtained by Indents(seurat) or seurat@active.indent). 
+
+```{r clustering}
+seuratobjects.merged <- FindNeighbors(seuratobjects.merged, reduction = "harmony",  dims = 1:20) # find neighbours
+seuratobjects.merged <- FindClusters(seuratobjects.merged, resolution = 0.3) # find clusters
+
+seuratobjects.merged$condition <- ifelse(grepl("T_C", seuratobjects.merged$orig.ident, ignore.case = TRUE), "T_C", "NT_P") # retrieve condition of samples
+
+DimPlot(seuratobjects.merged, group.by = c("seurat_clusters"), label = TRUE) # plot clusters
+DimPlot(seuratobjects.merged, group.by = "orig.ident") # plot samples
+DimPlot(seuratobjects.merged, group.by = "condition") # plot conditions
+DimPlot(seuratobjects.merged, group.by = "Phase") # plot cell cycle phase
+```
+
+Compute doublet scores within each batch and check clusters for high doublet scores.
+
+```{r, detect doublets}
+seuratobjects.split <- SplitObject(seuratobjects.merged, split.by = "orig.ident") # Doublets cannot exist across samples, therefore the samples are split and analyzed individually
+
+optimal_pks <- lapply(seuratobjects.split, function(x) {
+  sweep.stats <- summarizeSweep(paramSweep(x, PCs = 1:30, sct = TRUE), GT = FALSE)
+  bcmvn <- find.pK(sweep.stats)
+  as.numeric(levels(bcmvn$pK))[which.max(bcmvn$BCmetric)]
+}) # Selection of the pK that corresponds to maximum bcmvn
+
+nExp <- lapply(seuratobjects.split, function(x) {
+annotations <- x@meta.data$seurat_clusters
+homotypic.prop <- modelHomotypic(annotations) 
+nExp_poi <- round(0.048*nrow(x@meta.data))
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+return(nExp_poi.adj)
+}) # Assuming 4.8 % doublet formation rate (https://kb.10xgenomics.com/hc/en-us/articles/360001378811-What-is-the-maximum-number-of-cells-that-can-be-profiled) Calculate the number of expected doublets
+
+seuratobjects.split <- lapply(names(seuratobjects.split), function(x) {
+  x2 <- doubletFinder(seuratobjects.split[[x]], 
+                              pN = 0.25, pK = optimal_pks[[x]], 
+                              nExp = nExp[[x]], PCs = 1:30, sct = TRUE)
+  return(x2)
+}) # run doubletfinder
+
+seuratobjects.split <- lapply(seuratobjects.split, function(x) {
+colnames(x@meta.data)[grepl("DF.classifications", colnames(x@meta.data))] <- "doublet_finder"
+  colnames(x@meta.data)[grepl("pANN", colnames(x@meta.data))] <- "doublet_score"
+  x
+}) # rename to a consistant name
+
+doublets_list <- lapply(seuratobjects.split, function(x) {
+  doublets_col <- x@meta.data[["doublet_finder"]]
+  names(doublets_col) <- rownames(x@meta.data)
+  return(doublets_col)
+}) # extract the doublet data
+
+doubletsscore_list <- lapply(seuratobjects.split, function(x) {
+  doublets_col <- x@meta.data[["doublet_score"]]
+  names(doublets_col) <- rownames(x@meta.data)
+  return(doublets_col)
+}) # extract the doublet scores
+
+seuratobjects.merged$doublets <- do.call(c, doublets_list)[Cells(seuratobjects.merged)]
+DimPlot(seuratobjects.merged, group.by = "doublets") # plot the doublets
+
+seuratobjects.merged$doublet.scores <- do.call(c, doubletsscore_list)[Cells(seuratobjects.merged)]
+FeaturePlot(seuratobjects.merged, features = "doublet.scores") # plot the doublet scores
+```
+
+Once integrative analysis is complete, you can join the layers, which collapses the individual datasets together and recreates the original counts and data layers. You will need to do this before performing any differential expression analysis. 
+check print(seuratobjects.merged) before running!!
+
+```{r find markers}
+
+seuratobjects.joined <- JoinLayers(seuratobjects.merged) # find out if necessary
+
+seuratobjects.merged <- PrepSCTFindMarkers(seuratobjects.merged) # prepare
+
+print(seuratobjects.merged)
+
+clustermarkers.merged <- FindAllMarkers(seuratobjects.merged, min.pct = 0.5, only.pos = TRUE, logfc.threshold = 0.25)
+```
+
+Generate heatmap of top 5 marker genes !ADJUST and add cleaning of variables
+
+```{r to run harmony}
+
+TopGenes <- pull(slice_head(arrange(group_by(clustermarkers.merged, cluster), p_val_adj), n = 5), gene)
+
+DoHeatmap(seuratobjects.merged, features = TopGenes) + NoLegend() + theme(axis.text.y = element_text(size = 5))
+```
+
+Annotate clusters yourself using marker genes (genes listed were found in papers)  
+*Single Cell and Plasma RNA Sequencing for RNA Liquid Biopsy for Hepatocellular Carcinoma*
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9482117/
+MARKER GENES:
+- T cells: CD3D, CD3E, CD3G, CD2.  
+- NK cells: KLRD1,KLRF1. 
+- B cells: CD79A, MS4A1, SLAMF7, BLNK, FCRL5. 
+- Myeloid cells: LYZ, C1QB, CD14, CD163, CD68, CSF1R
+- Endothelial cells: PECAM1, VWF, ENG, CDH5. 
+- mesenchymal cells: ACTA2. 
+- Malignant cells: TF. 
+- hepatic progenitor cells: EPCAM, EPCAM, KRT19, PROM1, ALDH1A1, CD24. 
+- fibriblasts: COL1A2, FAP, PDPN, DCN, COL3A1, COL6A1. 
+
+```{r Visulize marker gene expression for clusters to check by harmony}
+DotPlot(seuratobjects.merged, features = c("CD3E", "CD3D", "CD3G", "GZMA", "KLRD1", "KLRF1", "CD79A", "MS4A1", "LYZ", "C1QB", "S100A9", "AIF1", "PECAM1", "DNASE1L3", "FCN3", "ACTA2", "TAGLN", "EPCAM", "TF", "SIGLEC1", "ALB", "APOA2", "ANXA4", "MMP7")) + theme(axis.text.x = element_text(size = 7))
+
+FeaturePlot(seuratobjects.merged, features=c("CD3E", "CD3D"),
+            label = TRUE, cols = c('lightgrey', 'blue'))
+
+FeaturePlot(seuratobjects.merged, features=c("KLRD1", "KLRF1"),
+            label = TRUE, cols = c('lightgrey', 'blue'))
+
+FeaturePlot(seuratobjects.merged, features=c("CD79A", "MS4A1"),
+            label = TRUE, cols = c('lightgrey', 'blue'))
+
+FeaturePlot(seuratobjects.merged, features=c("LYZ", "C1QB", "SIGLEC1"),
+            label = TRUE, cols = c('lightgrey', 'blue'))
+
+FeaturePlot(seuratobjects.merged, features=c("PECAM1", "VWF"),
+            label = TRUE, cols = c('lightgrey', 'blue'))
+
+FeaturePlot(seuratobjects.merged, features=c("ACTA2"),
+            label = TRUE, cols = c('lightgrey', 'blue'))
+
+FeaturePlot(seuratobjects.merged, features=c("EPCAM", "TF"),
+            label = TRUE, cols = c('lightgrey', 'blue'))
+
+FeaturePlot(seuratobjects.merged, features=c("COL1A2", "FAP"),
+            label = TRUE, cols = c('lightgrey', 'blue'))
+
+VlnPlot(seuratobjects.merged, features = c("LYZ", "C1QB", "SIGLEC1"), pt.size = 0)
+```
+
+```{r}
+seuratobjects.merged <- RenameIdents(seuratobjects.merged, '0' = 'Myeloid cell', '1' = "Myeloid cell", '2' = 'Malignant cell', '3' = 'T/NK cell', '4' = 'Endothelial cell', '5' = 'Myeloid cell', '6' = 'B cell', '7' = 'T/NK cell', '8' = 'Malignant cell', '10' = 'Myeloid cell', '11' = 'Mesenchymal cell', '12' = 'B cell', '13' = 'Myeloid cell', '15' = 'Malignant cell', '17' = 'Malignant cell', '18' = 'Malignant cell', '19' = 'Endothelial cell')
+DimPlot(seuratobjects.merged, label = TRUE)
+view(harmony_markers$cluster9.markers)
+```
+
+```{r take a sneak peak at CD169 expression}
+
+trial <- FindAllMarkers(seuratobjects.merged, features = "SIGLEC1")
+
+DotPlot(seuratobjects.merged, features = c("SIGLEC1"))
+FeaturePlot(seuratobjects.merged, features=c("SIGLEC1"),
+            label = TRUE, cols = c('lightgrey', 'blue'))
+FeaturePlot(seuratobjects.merged, features=c("SIGLEC1"), split.by = "condition")
+VlnPlot(seuratobjects.merged, features = c("SIGLEC1")) + theme(legend.position = "none")
+```
