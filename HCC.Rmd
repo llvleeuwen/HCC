@@ -272,11 +272,11 @@ DimPlot(seuratobjects.merged, group.by = "condition") # plot conditions
 DimPlot(seuratobjects.merged, group.by = "Phase") # plot cell cycle phase
 
 print(seuratobjects.merged) # take a look at the merged seuratobjects
-print(seuratobjects.merged@meta.data) # take a look at the merged seuratobjects
 ```
 
 ```{r set resolution}
 seuratobjects.merged <- FindClusters(seuratobjects.merged, resolution = 0.4) # rerun to set the desired resolution
+print(seuratobjects.merged@meta.data) # take a look at the merged seuratobjects
 ```
 
 Compute doublet scores within each batch and check clusters for high doublet scores.
